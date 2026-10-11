@@ -1,8 +1,8 @@
-"""Interface gráfica da HU1: Entrada e Validação da Consulta.
+"""Interface gráfica da HU1 e HU2: validação e álgebra relacional.
 
 Fluxo do botão "Analisar":
     texto digitado -> parse_query() (sintaxe) -> validate() (semântica)
-    -> mensagem amigável de sucesso ou erro (indicando o tipo da falha).
+    -> conversão para álgebra relacional -> mensagem de sucesso ou erro.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from tkinter import scrolledtext
 
 from .errors import SqlSemanticError, SqlSyntaxError
 from .parser import Query, parse_query
+from .relational_algebra import to_relational_algebra
 from .semantic import validate
 
 EXAMPLE_QUERY = (
@@ -26,7 +27,7 @@ EXAMPLE_QUERY = (
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Processador de Consultas SQL — HU1: Entrada e Validação")
+        self.title("Processador de Consultas SQL — HU1 e HU2")
         self.geometry("860x600")
         self.minsize(640, 480)
 
@@ -100,7 +101,12 @@ class App(tk.Tk):
             return
 
         self.last_query = query
-        self._write(f"✅ Consulta válida!\n\n{_describe(query)}", "ok")
+        algebra = to_relational_algebra(query)
+        self._write(
+            f"✅ Consulta válida!\n\n{_describe(query)}\n\n"
+            f"Álgebra Relacional:\n{algebra}",
+            "ok",
+        )
 
 
 def _describe(query: Query) -> str:

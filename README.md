@@ -13,7 +13,7 @@ otimização e exibe o plano de execução final.
 | HU  | Descrição                              | Status        |
 |-----|------------------------------------------|---------------|
 | HU1 | Entrada e Validação da Consulta           | ✅ Implementada |
-| HU2 | Conversão para Álgebra Relacional         | ⬜ Pendente     |
+| HU2 | Conversão para Álgebra Relacional         | ✅ Implementada |
 | HU3 | Construção do Grafo de Operadores         | ⬜ Pendente     |
 | HU4 | Otimização da Consulta (heurísticas)      | ⬜ Pendente     |
 | HU5 | Plano de Execução                         | ⬜ Pendente     |
@@ -54,6 +54,24 @@ otimização e exibe o plano de execução final.
 5. A interface mostra "✅ Consulta válida" com um resumo da consulta interpretada, ou
    "❌ Erro de Sintaxe" / "❌ Erro Semântico" com a mensagem específica.
 
+## HU2 — Conversão para Álgebra Relacional
+
+Após validar a consulta, a interface também exibe sua expressão equivalente em álgebra
+relacional. O módulo `processador_consultas/relational_algebra.py` consome diretamente a AST
+retornada por `parse_query()`:
+
+- `SELECT` com lista de colunas é representado por projeção (`π`).
+- `WHERE` é representado por seleção (`σ`).
+- Cada `JOIN ... ON` é representado por uma junção theta (`⋈`) com sua condição.
+- Consultas sem uma dessas operações omitem o operador correspondente; `SELECT *` não
+  acrescenta uma projeção artificial.
+
+Por exemplo, a consulta padrão da interface gera uma expressão equivalente a:
+
+```text
+π_{Produto.Nome, Categoria.Descricao}(σ_{Produto.Preco > 100}((Produto ⋈_{Produto.Categoria_idCategoria = Categoria.idCategoria} Categoria)))
+```
+
 A árvore (`Query`) retornada pelo parser é a estrutura que as próximas histórias de usuário
 devem reaproveitar (HU2 a converte em álgebra relacional, HU3 a usa para montar o grafo de
 operadores, etc.) — não é necessário reprocessar a string SQL original.
@@ -75,11 +93,13 @@ As tabelas e colunas aceitas pelo validador (Imagem 01 do enunciado) estão em
 │   ├── lexer.py                   # tokenizador da consulta SQL
 │   ├── parser.py                  # parser recursivo descendente + AST (Query, Join, ...)
 │   ├── semantic.py                # validação de tabelas/colunas contra metadata.py
-│   └── gui.py                     # interface gráfica (Tkinter) da HU1
+│   ├── relational_algebra.py      # conversão da AST para álgebra relacional (HU2)
+│   └── gui.py                     # interface gráfica (Tkinter) das HU1 e HU2
 └── tests/
     ├── test_lexer.py
     ├── test_parser.py
-    └── test_semantic.py
+    ├── test_semantic.py
+    └── test_relational_algebra.py
 ```
 
 ## Como executar
@@ -128,7 +148,7 @@ python3 -m unittest discover -s tests -v
 - Use `processador_consultas.parser.parse_query(sql)` para obter a árvore `Query` já validada
   sintaticamente, e `processador_consultas.semantic.validate(query)` para validá-la
   semanticamente — não é necessário reimplementar o parsing.
-- A HU2 (Conversão para Álgebra Relacional) deve consumir o objeto `Query` retornado pelo
-  parser (campos `columns`, `from_table`, `joins`, `where`).
+- A HU2 (Conversão para Álgebra Relacional) consome o objeto `Query` retornado pelo parser
+  (campos `columns`, `from_table`, `joins`, `where`).
 - Siga o padrão de módulos já estabelecido: um módulo por responsabilidade dentro de
   `processador_consultas/`, com testes correspondentes em `tests/`.

@@ -7,6 +7,9 @@ HU1 (Entrada e Validação da Consulta) está implementada nos módulos:
     metadata.py  - modelo relacional de referência (Imagem 01 do enunciado)
     gui.py       - interface gráfica (campo de texto + botão "Analisar")
 
+HU2 (Conversão para Álgebra Relacional) está implementada em:
+    relational_algebra.py - conversão da AST para expressões com π, σ e ⋈
+
 O resultado do parsing (processador_consultas.parser.Query) é a estrutura
 que as próximas histórias de usuário devem consumir, em vez de reprocessar
 a string SQL original.
