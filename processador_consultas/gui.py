@@ -10,11 +10,15 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import scrolledtext
+from tkinter import ttk
+
+from processador_consultas.operator_graph import OperatorNode, build_operator_graph
 
 from .errors import SqlSemanticError, SqlSyntaxError
 from .parser import Query, parse_query
 from .relational_algebra import to_relational_algebra
 from .semantic import validate
+
 
 EXAMPLE_QUERY = (
     "SELECT Produto.Nome, Categoria.Descricao\n"
@@ -64,15 +68,26 @@ class App(tk.Tk):
         ).pack(fill="x", padx=12, pady=(12, 0))
 
         self.output_box = scrolledtext.ScrolledText(
-            self, font=mono, wrap="word", state="disabled"
+        self, height=7, font=mono, wrap="word", state="disabled"
         )
-        self.output_box.pack(fill="both", expand=True, padx=12, pady=(6, 12))
+        self.output_box.pack(fill="x", padx=12, pady=(6, 6))
+
+        tk.Label(
+            self,
+            text="Grafo de Operadores (original)",
+            anchor="w",
+            font=("Helvetica", 11, "bold"),
+        ).pack(fill="x", padx=12, pady=(6, 0))
+
+        self.graph_tree = ttk.Treeview(self, show="tree", height=8)
+        self.graph_tree.pack(fill="both", expand=True, padx=12, pady=(6, 12))
         self.output_box.tag_config("ok", foreground="#1a7f37")
         self.output_box.tag_config("err", foreground="#c0392b")
         self.output_box.tag_config("bold", font=("Courier New", 11, "bold"))
 
     def _clear_all(self) -> None:
         self.input_box.delete("1.0", tk.END)
+        self._clear_graph()
         self._write("", tag=None)
 
     def _write(self, text: str, tag: str | None) -> None:
@@ -83,6 +98,7 @@ class App(tk.Tk):
         self.output_box.configure(state="disabled")
 
     def analyze(self) -> None:
+        self._clear_graph()
         sql = self.input_box.get("1.0", tk.END).strip()
         if not sql:
             self._write("Digite uma consulta SQL antes de analisar.", "err")
@@ -107,6 +123,18 @@ class App(tk.Tk):
             f"Álgebra Relacional:\n{algebra}",
             "ok",
         )
+        graph = build_operator_graph(query)
+        self._show_operator_graph(graph)
+
+    def _clear_graph(self) -> None:
+        self.graph_tree.delete(*self.graph_tree.get_children())
+
+
+    def _show_operator_graph(self, node: OperatorNode, parent: str = "") -> None:
+        item = self.graph_tree.insert(parent, "end", text=node.label, open=True)
+
+        for child in node.children:
+            self._show_operator_graph(child, item)
 
 
 def _describe(query: Query) -> str:
