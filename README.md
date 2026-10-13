@@ -14,7 +14,7 @@ otimização e exibe o plano de execução final.
 |-----|------------------------------------------|---------------|
 | HU1 | Entrada e Validação da Consulta           | ✅ Implementada |
 | HU2 | Conversão para Álgebra Relacional         | ✅ Implementada |
-| HU3 | Construção do Grafo de Operadores         | ⬜ Pendente     |
+| HU3 | Construção do Grafo de Operadores         | ✅ Implementada |
 | HU4 | Otimização da Consulta (heurísticas)      | ⬜ Pendente     |
 | HU5 | Plano de Execução                         | ⬜ Pendente     |
 
