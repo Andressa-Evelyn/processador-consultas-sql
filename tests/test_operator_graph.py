@@ -40,6 +40,31 @@ class TestOperatorGraph(unittest.TestCase):
         self.assertEqual("Produto", graph.label)
         self.assertEqual([], graph.children)
 
+    def test_monta_grafo_com_multiplos_joins(self):
+      """Verifica que cada JOIN acrescenta uma tabela ao grafo."""
+      sql = """
+      SELECT Produto.Nome
+      FROM Produto
+      JOIN Categoria
+          ON Produto.Categoria_idCategoria = Categoria.idCategoria
+      JOIN Pedido_has_Produto
+          ON Produto.idProduto = Pedido_has_Produto.Produto_idProduto
+      """
+
+      graph = build_operator_graph(parse_query(sql))
+
+      # O primeiro JOIN fica dentro do segundo JOIN.
+      second_join = graph.children[0]
+      self.assertEqual("join", second_join.kind)
+      self.assertEqual("Pedido_has_Produto", second_join.children[1].label)
+
+      first_join = second_join.children[0]
+      self.assertEqual("join", first_join.kind)
+      self.assertEqual(
+          ["Produto", "Categoria"],
+          [node.label for node in first_join.children],
+      )
+
 
 if __name__ == "__main__":
     unittest.main()

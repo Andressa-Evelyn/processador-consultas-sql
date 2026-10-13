@@ -31,7 +31,7 @@ EXAMPLE_QUERY = (
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Processador de Consultas SQL — HU1 e HU2")
+        self.title("Processador de Consultas SQL — HU1, HU2  HU3")
         self.geometry("860x600")
         self.minsize(640, 480)
 
