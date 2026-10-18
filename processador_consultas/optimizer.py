@@ -116,10 +116,146 @@ def optimize_selection_pushdown(
     return join
 
 
+def column_key(column: ColumnRef) -> tuple[str, str]:
+    return column.table, column.name
+
+
+def collect_column_refs(value) -> list[ColumnRef]:
+    """Coleta referências a colunas dentro de uma expressão."""
+    if isinstance(value, ColumnRef):
+        return [value]
+
+    if isinstance(value, (list, tuple)):
+        result = []
+        for item in value:
+            result.extend(collect_column_refs(item))
+        return result
+
+    if is_dataclass(value) and not isinstance(value, type):
+        result = []
+        for field_info in fields(value):
+            result.extend(
+                collect_column_refs(getattr(value, field_info.name))
+            )
+        return result
+
+    return []
+
+
+def collect_refs_by_key(node: OperatorNode) -> dict:
+    """Mantém objetos ColumnRef para reconstruir as projeções."""
+    result = {}
+
+    def visit(current):
+        for ref in collect_column_refs(current.data):
+            result[column_key(ref)] = ref
+
+        for child in current.children:
+            visit(child)
+
+    visit(node)
+    return result
+
+
+def optimize_projection_pushdown(
+    root: OperatorNode,
+) -> OperatorNode:
+    refs = collect_refs_by_key(root)
+
+    def push(node, required: set[tuple[str, str]]):
+        if node.kind == OperatorKind.TABLE:
+            # Conserva apenas as colunas necessárias desta tabela.
+            columns = [
+                refs[key]
+                for key in sorted(required)
+                if key[0] == node.data and key in refs
+            ]
+
+            if not columns:
+                return node
+
+            return OperatorNode(
+                kind=OperatorKind.PROJECTION,
+                data=columns,
+                children=[node],
+            )
+
+        if node.kind == OperatorKind.PROJECTION:
+            projection_keys = {
+                column_key(column)
+                for column in node.data
+            }
+
+            # Não descartamos colunas necessárias aos operadores abaixo.
+            child_required = required | projection_keys
+
+            return OperatorNode(
+                kind=OperatorKind.PROJECTION,
+                data=node.data,
+                children=[
+                    push(node.children[0], child_required)
+                ],
+            )
+
+        if node.kind == OperatorKind.SELECTION:
+            predicate_keys = {
+                column_key(column)
+                for column in collect_column_refs(node.data)
+            }
+
+            child_required = required | predicate_keys
+
+            return OperatorNode(
+                kind=OperatorKind.SELECTION,
+                data=node.data,
+                children=[
+                    push(node.children[0], child_required)
+                ],
+            )
+
+        if node.kind == OperatorKind.JOIN:
+            join_keys = {
+                column_key(column)
+                for column in collect_column_refs(node.data)
+            }
+
+            all_required = required | join_keys
+
+            left, right = node.children
+
+            left_tables = collect_tables(left)
+            right_tables = collect_tables(right)
+
+            left_required = {
+                key for key in all_required
+                if key[0] in left_tables
+            }
+
+            right_required = {
+                key for key in all_required
+                if key[0] in right_tables
+            }
+
+            return OperatorNode(
+                kind=OperatorKind.JOIN,
+                data=node.data,
+                children=[
+                    push(left, left_required),
+                    push(right, right_required),
+                ],
+            )
+
+        raise ValueError(
+            f"Operador não suportado: {node.kind}"
+        )
+
+    return push(root, set())
+
+
 def optimize(node: OperatorNode) -> OperatorNode:
-    all_optimizers = [optimize_selection_pushdown]
+    all_optimizers = [optimize_selection_pushdown, optimize_projection_pushdown]
     result = node
     for func in all_optimizers:
-        result = func(node)
+        result = func(result)
 
     return result

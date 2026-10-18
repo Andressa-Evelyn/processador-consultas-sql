@@ -208,6 +208,71 @@ class TestOptimizeSelectionPushdown(unittest.TestCase):
 
         self.assertEqual(expected, optimize_selection_pushdown(original))
 
+    def test_groups_interleaved_conditions_by_branch_and_preserves_remaining_and(self):
+        first_left = predicate("A", "price")
+        second_left = predicate("A", "stock")
+        right_condition = predicate("B", "value")
+        cross_table = Comparison(ColumnRef("A", "id"), "<", ColumnRef("B", "id"))
+        unknown = predicate("Unknown")
+        condition = LogicalAnd(
+            LogicalAnd(first_left, cross_table),
+            LogicalAnd(right_condition, LogicalAnd(second_left, unknown)),
+        )
+        original = selection(condition, self.join)
+        snapshot = deepcopy(original)
+        expected = selection(
+            LogicalAnd(cross_table, unknown),
+            make_join(
+                selection(LogicalAnd(first_left, second_left), table("A")),
+                selection(right_condition, table("B")),
+            ),
+        )
+
+        result = optimize_selection_pushdown(original)
+
+        self.assertEqual(expected, result)
+        self.assertEqual(snapshot, original)
+
+    def test_moves_comparisons_with_column_on_right_or_both_operands(self):
+        for name, index in (("A", 0), ("B", 1)):
+            conditions = [
+                Comparison(Literal("100", "number"), "<", ColumnRef(name, "price")),
+                Comparison(ColumnRef(name, "price"), ">", ColumnRef(name, "cost")),
+            ]
+            for condition in conditions:
+                with self.subTest(table=name, condition=str(condition)):
+                    expected = deepcopy(self.join)
+                    expected.children[index] = selection(condition, table(name))
+
+                    result = optimize_selection_pushdown(selection(condition, self.join))
+
+                    self.assertEqual(expected, result)
+
+    def test_moves_cross_table_condition_to_lowest_join_containing_both_tables(self):
+        cross_table = Comparison(
+            ColumnRef("A", "price"), ">", ColumnRef("B", "price")
+        )
+        local_condition = predicate("C")
+        branch = make_join(table("A"), table("B"))
+        for index in (0, 1):
+            with self.subTest(branch=index):
+                children = [branch, table("C")] if index == 0 else [table("C"), branch]
+                original = selection(
+                    LogicalAnd(cross_table, local_condition), make_join(*children)
+                )
+                expected_children = [
+                    selection(cross_table, branch),
+                    selection(local_condition, table("C")),
+                ]
+                if index == 1:
+                    expected_children.reverse()
+                expected = make_join(*expected_children)
+
+                result = optimize_selection_pushdown(original)
+
+                self.assertEqual(expected, result)
+                self.assertEqual(result, optimize_selection_pushdown(result))
+
     def test_preserves_trees_without_join_directly_below_selection(self):
         cases = [table("A"), self.join, selection(predicate("A"), table("A"))]
         for original in cases:
