@@ -15,7 +15,7 @@ otimização e exibe o plano de execução final.
 | HU1 | Entrada e Validação da Consulta           | ✅ Implementada |
 | HU2 | Conversão para Álgebra Relacional         | ✅ Implementada |
 | HU3 | Construção do Grafo de Operadores         | ✅ Implementada |
-| HU4 | Otimização da Consulta (heurísticas)      | ⬜ Pendente     |
+| HU4 | Otimização da Consulta (heurísticas)      | ✅ Implementada |
 | HU5 | Plano de Execução                         | ⬜ Pendente     |
 
 ## HU1 — Entrada e Validação da Consulta
@@ -63,6 +63,7 @@ retornada por `parse_query()`:
 - `SELECT` com lista de colunas é representado por projeção (`π`).
 - `WHERE` é representado por seleção (`σ`).
 - Cada `JOIN ... ON` é representado por uma junção theta (`⋈`) com sua condição.
+- Tabelas separadas por vírgula no `FROM` são representadas por produto cartesiano (`×`).
 - Consultas sem uma dessas operações omitem o operador correspondente; `SELECT *` não
   acrescenta uma projeção artificial.
 
@@ -82,6 +83,66 @@ As tabelas e colunas aceitas pelo validador (Imagem 01 do enunciado) estão em
 `processador_consultas/metadata.py`: `Categoria`, `Produto`, `TipoCliente`, `Cliente`,
 `TipoEndereco`, `Endereco`, `Telefone`, `Status`, `Pedido`, `Pedido_has_Produto`.
 
+## HU3 — Construção do Grafo de Operadores
+
+> Como aluno, quero que o sistema construa um grafo de operadores, para visualizar a
+> estratégia de execução da consulta.
+
+Implementada em `processador_consultas/operator_graph.py`, pela função
+`build_operator_graph(query)`, que utiliza a AST retornada pelo parser.
+
+- A interface exibe a árvore original na aba **Sem otimização**.
+- As folhas representam as tabelas; os nós intermediários representam seleções (`σ`),
+  junções (`⋈`), produtos cartesianos (`×`) e projeções (`π`).
+- As ligações entre pais e filhos representam o fluxo dos resultados intermediários:
+  os filhos fornecem os dados consumidos pelo operador pai.
+- A raiz representa a projeção final quando o `SELECT` lista colunas. Para `SELECT *`,
+  essa projeção é omitida, pois todas as colunas são mantidas.
+- A árvore respeita as dependências lógicas da consulta: tabelas alimentam as junções
+  ou produtos cartesianos, seguidos pelo filtro do `WHERE` e pela projeção final.
+  `JOIN` tem precedência sobre as vírgulas no `FROM`.
+
+## HU4 — Otimização da Consulta Raiz
+
+> Como aluno, quero que a álgebra relacional seja otimizada conforme heurísticas,
+> para reduzir o custo de execução.
+
+Implementada em `processador_consultas/optimizer.py`. A função `optimize(node)` aplica
+as heurísticas sobre o grafo de operadores, preservando a árvore original. A interface
+exibe o resultado na aba **Com otimização**, permitindo comparar as duas estratégias.
+
+As heurísticas implementadas são:
+
+- **Antecipação de seleções** (`optimize_selection_pushdown`): divide condições ligadas
+  por `AND` e move os filtros para os ramos das tabelas correspondentes, reduzindo as
+  tuplas antes das junções. Condições que dependem de ambos os ramos permanecem acima.
+- **Antecipação de projeções** (`optimize_projection_pushdown`): mantém perto das tabelas
+  apenas os atributos necessários à saída, aos filtros e às condições de junção.
+- **Operações mais restritivas primeiro** (`optimize_restrictive_first`): ordena seleções
+  pela seletividade estimada e reordena blocos de junções internas para priorizar os
+  menores resultados intermediários.
+- **Eliminação de produtos cartesianos evitáveis** (`avoid_cartesian_product`): transforma
+  uma seleção com comparação entre colunas dos dois ramos de um produto cartesiano em
+  uma junção com a mesma condição. Produtos sem condição de ligação são preservados.
+
+A ordem das etapas em `optimize` considera as dependências entre as regras:
+
+1. Antecipar as seleções.
+2. Ordenar e separar os predicados das seleções.
+3. Converter produtos cartesianos elegíveis em junções.
+4. Reordenar as operações, incluindo as junções recém-criadas.
+5. Antecipar as projeções, preservando os atributos exigidos pelos demais operadores.
+
+As estimativas usam `TABLE_CARDINALITIES` (linhas por tabela), `COLUMN_DISTINCT_VALUES`
+(valores distintos por coluna) e `PREDICATE_SELECTIVITIES` (seletividades padrão), em
+`metadata.py`. São estatísticas ilustrativas e editáveis, sem coleta em um banco real.
+A interface mostra as cardinalidades e os valores distintos na árvore **Metadados**.
+O cálculo assume distribuição uniforme e independência entre predicados; a escolha das
+junções é gulosa e não garante o plano global de menor custo.
+
+Os testes em `tests/test_operator_graph.py` e `tests/test_optimizer.py` cobrem a construção
+dos grafos, as transformações, a preservação da árvore original e o fluxo de otimização.
+
 ## Estrutura do projeto
 
 ```
@@ -94,12 +155,16 @@ As tabelas e colunas aceitas pelo validador (Imagem 01 do enunciado) estão em
 │   ├── parser.py                  # parser recursivo descendente + AST (Query, Join, ...)
 │   ├── semantic.py                # validação de tabelas/colunas contra metadata.py
 │   ├── relational_algebra.py      # conversão da AST para álgebra relacional (HU2)
-│   └── gui.py                     # interface gráfica (Tkinter) das HU1 e HU2
+│   ├── operator_graph.py          # construção do grafo de operadores (HU3)
+│   ├── optimizer.py               # heurísticas de otimização do grafo (HU4)
+│   └── gui.py                     # interface gráfica (Tkinter) das HU1 a HU4
 └── tests/
     ├── test_lexer.py
     ├── test_parser.py
     ├── test_semantic.py
-    └── test_relational_algebra.py
+    ├── test_relational_algebra.py
+    ├── test_operator_graph.py
+    └── test_optimizer.py
 ```
 
 ## Como executar
