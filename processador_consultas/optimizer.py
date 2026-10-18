@@ -1,7 +1,11 @@
 from copy import deepcopy
 from dataclasses import fields, is_dataclass
 
-from .parser import ColumnRef, LogicalAnd
+from .parser import ColumnRef, Comparison, LogicalAnd
+from .metadata import (
+    TABLE_CARDINALITIES, COLUMN_DISTINCT_VALUES,
+    DEFAULT_TABLE_CARDINALITY, PREDICATE_SELECTIVITIES,
+)
 from .operator_graph import OperatorNode, OperatorKind
 
 
@@ -252,8 +256,127 @@ def optimize_projection_pushdown(
     return push(root, set())
 
 
+def estimate_selectivity(condition) -> float:
+    """Estima a fração de linhas mantidas; AND assume independência."""
+    if isinstance(condition, LogicalAnd):
+        return estimate_selectivity(condition.left) * estimate_selectivity(condition.right)
+    if not isinstance(condition, Comparison):
+        return 1.0
+    distinct_counts = [
+        COLUMN_DISTINCT_VALUES[(column.table, column.name)]
+        for column in collect_columns(condition)
+        if (column.table, column.name) in COLUMN_DISTINCT_VALUES
+    ]
+    if condition.operator in ("=", "<>") and distinct_counts:
+        equality = 1 / max(1, max(distinct_counts))
+        return equality if condition.operator == "=" else 1 - equality
+    return PREDICATE_SELECTIVITIES.get(condition.operator, 1.0)
+
+
+def estimate_cardinality(node: OperatorNode) -> float:
+    """Estima linhas intermediárias sem acessar um banco de dados."""
+    if node.kind == OperatorKind.TABLE:
+        return float(TABLE_CARDINALITIES.get(node.data, DEFAULT_TABLE_CARDINALITY))
+    if node.kind == OperatorKind.JOIN:
+        left, right = node.children
+        return estimate_cardinality(left) * estimate_cardinality(right) * estimate_selectivity(node.data)
+    rows = estimate_cardinality(node.children[0])
+    if node.kind == OperatorKind.SELECTION:
+        rows *= estimate_selectivity(node.data)
+    return rows
+
+
+def split_conjunction(condition) -> list:
+    if isinstance(condition, LogicalAnd):
+        return split_conjunction(condition.left) + split_conjunction(condition.right)
+    return [condition]
+
+
+def combine_conjunction(conditions):
+    result = conditions[0]
+    for condition in conditions[1:]:
+        result = LogicalAnd(result, condition)
+    return result
+
+
+def optimize_restrictive_first(root: OperatorNode) -> OperatorNode:
+    """Ordena por estimativas, sem alterar a entrada.
+
+    Usa escolha gulosa do menor resultado intermediário em junções internas
+    contíguas. Seleções e projeções delimitam os blocos de junções reordenáveis.
+    As estatísticas assumem distribuição uniforme e predicados independentes;
+    não representam uma busca pelo plano global de menor custo.
+    """
+    def reorder(node):
+        if node.kind == OperatorKind.SELECTION and len(node.children) == 1:
+            conditions = []
+            while node.kind == OperatorKind.SELECTION and len(node.children) == 1:
+                conditions.extend(split_conjunction(node.data))
+                node = node.children[0]
+            result = reorder(node)
+            # A primeira condição executada fica mais perto das folhas.
+            for condition in sorted(conditions, key=estimate_selectivity):
+                result = OperatorNode(OperatorKind.SELECTION, condition, [result])
+            return result
+
+        if node.kind != OperatorKind.JOIN or len(node.children) != 2:
+            node.children = [reorder(child) for child in node.children]
+            return node
+
+        relations, conditions = [], []
+
+        def flatten(current):
+            if current.kind == OperatorKind.JOIN and len(current.children) == 2:
+                conditions.extend(split_conjunction(current.data))
+                for child in current.children:
+                    flatten(child)
+            else:
+                relations.append(reorder(current))
+
+        flatten(node)
+        table_sets = [collect_tables(relation) for relation in relations]
+        references = [{column.table for column in collect_columns(c)} for c in conditions]
+        # Sem resolução de aliases/colunas ambíguas, conservamos a ordem original.
+        all_tables = set().union(*table_sets)
+        if (sum(map(len, table_sets)) != len(all_tables)
+                or any(None in refs or len(refs) < 2 or not refs <= all_tables
+                       for refs in references)):
+            node.children = [reorder(child) for child in node.children]
+            return node
+
+        pending = list(zip(conditions, references))
+        while len(relations) > 1:
+            candidates = []
+            for i in range(len(relations)):
+                for j in range(i + 1, len(relations)):
+                    available = table_sets[i] | table_sets[j]
+                    applicable = [c for c, refs in pending
+                                  if refs <= available and refs & table_sets[i] and refs & table_sets[j]]
+                    if applicable:
+                        join = OperatorNode(OperatorKind.JOIN, combine_conjunction(applicable),
+                                            [relations[i], relations[j]])
+                        candidates.append((estimate_cardinality(join), i, j, join))
+            if not candidates:
+                # Não introduzimos produtos cartesianos para conectar componentes.
+                node.children = [reorder(child) for child in node.children]
+                return node
+            _, i, j, join = min(candidates, key=lambda candidate: candidate[:3])
+            available = table_sets[i] | table_sets[j]
+            pending = [(c, refs) for c, refs in pending if not refs <= available]
+            relations[i] = join
+            table_sets[i] = available
+            del relations[j]
+            del table_sets[j]
+        return relations[0]
+
+    return reorder(deepcopy(root))
+
+
 def optimize(node: OperatorNode) -> OperatorNode:
-    all_optimizers = [optimize_selection_pushdown, optimize_projection_pushdown]
+    all_optimizers = [
+        optimize_selection_pushdown, optimize_restrictive_first,
+        optimize_projection_pushdown,
+    ]
     result = node
     for func in all_optimizers:
         result = func(result)

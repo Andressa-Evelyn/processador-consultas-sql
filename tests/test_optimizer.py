@@ -1,8 +1,15 @@
 import unittest
 from copy import deepcopy
+from unittest.mock import patch
+
+from processador_consultas import metadata
 
 from processador_consultas.operator_graph import OperatorKind, OperatorNode
-from processador_consultas.optimizer import optimize_selection_pushdown
+from processador_consultas.optimizer import (
+    collect_tables, estimate_cardinality, estimate_selectivity,
+    optimize, optimize_restrictive_first, optimize_selection_pushdown,
+    split_conjunction,
+)
 from processador_consultas.parser import ColumnRef, Comparison, Literal, LogicalAnd
 
 
@@ -293,6 +300,114 @@ class TestOptimizeSelectionPushdown(unittest.TestCase):
         result.children[1].children.append(table("Extra"))
         result.children[0].data.left = predicate("Other")
         self.assertEqual(snapshot, original)
+
+
+def join(left, right, first, second):
+    return OperatorNode(
+        OperatorKind.JOIN,
+        Comparison(ColumnRef(first, "id"), "=", ColumnRef(second, "id")),
+        [left, right],
+    )
+
+
+class TestRestrictiveFirst(unittest.TestCase):
+    def test_metadata_covers_all_tables(self):
+        self.assertEqual(set(metadata.SCHEMA), set(metadata.TABLE_CARDINALITIES))
+        for (name, column), count in metadata.COLUMN_DISTINCT_VALUES.items():
+            self.assertIn(column, metadata.SCHEMA[name])
+            self.assertGreater(count, 0)
+            self.assertLessEqual(count, metadata.TABLE_CARDINALITIES[name])
+
+    def test_estimates_equality_range_and_conjunction(self):
+        equality = Comparison(ColumnRef("Produto", "idProduto"), "=", Literal("1", "number"))
+        inequality = Comparison(equality.left, "<>", equality.right)
+        range_condition = Comparison(equality.left, ">", equality.right)
+        self.assertAlmostEqual(0.0001, estimate_selectivity(equality))
+        self.assertAlmostEqual(0.9999, estimate_selectivity(inequality))
+        self.assertAlmostEqual(1 / 3, estimate_selectivity(range_condition))
+        self.assertAlmostEqual(0.0001 / 3, estimate_selectivity(LogicalAnd(equality, range_condition)))
+        self.assertEqual(metadata.DEFAULT_TABLE_CARDINALITY, estimate_cardinality(table("Unknown")))
+
+    def test_orders_combined_and_stacked_selections_nearest_table_first(self):
+        equality = Comparison(ColumnRef("Produto", "idProduto"), "=", Literal("1", "number"))
+        range_condition = Comparison(ColumnRef("Produto", "Preco"), ">", Literal("100", "number"))
+        for original in (
+            OperatorNode(OperatorKind.SELECTION, LogicalAnd(range_condition, equality), [table("Produto")]),
+            OperatorNode(OperatorKind.SELECTION, equality, [
+                OperatorNode(OperatorKind.SELECTION, range_condition, [table("Produto")])
+            ]),
+        ):
+            with self.subTest(original=original):
+                snapshot = deepcopy(original)
+                result = optimize_restrictive_first(original)
+                self.assertEqual(range_condition, result.data)
+                self.assertEqual(equality, result.children[0].data)
+                self.assertEqual(table("Produto"), result.children[0].children[0])
+                self.assertEqual(snapshot, original)
+
+    def test_joins_smallest_estimated_result_first_and_preserves_predicates(self):
+        original = join(join(table("A"), table("B"), "A", "B"), table("C"), "B", "C")
+        snapshot = deepcopy(original)
+        with patch.dict(metadata.TABLE_CARDINALITIES, {"A": 10000, "B": 100, "C": 10}):
+            result = optimize_restrictive_first(original)
+        inner = next(child for child in result.children if child.kind == OperatorKind.JOIN)
+        self.assertEqual({"B", "C"}, collect_tables(inner))
+        self.assertCountEqual(
+            [original.data, original.children[0].data], [result.data, inner.data]
+        )
+        self.assertEqual(snapshot, original)
+
+    def test_uses_filtered_cardinality_when_choosing_join(self):
+        condition = Comparison(ColumnRef("A", "id"), "=", Literal("1", "number"))
+        filtered = OperatorNode(OperatorKind.SELECTION, condition, [table("A")])
+        original = join(join(filtered, table("B"), "A", "B"), table("C"), "B", "C")
+        with patch.dict(metadata.TABLE_CARDINALITIES, {"A": 10000, "B": 100, "C": 10}), \
+                patch.dict(metadata.COLUMN_DISTINCT_VALUES, {("A", "id"): 10000}):
+            result = optimize_restrictive_first(original)
+        inner = next(child for child in result.children if child.kind == OperatorKind.JOIN)
+        self.assertEqual({"A", "B"}, collect_tables(inner))
+
+    def test_preserves_cyclic_join_predicates_and_projection(self):
+        original = join(join(table("A"), table("B"), "A", "B"), table("C"), "B", "C")
+        extra = Comparison(ColumnRef("A", "id"), "=", ColumnRef("C", "id"))
+        original.data = LogicalAnd(original.data, extra)
+        columns = [ColumnRef("A", "id")]
+        result = optimize_restrictive_first(OperatorNode(OperatorKind.PROJECTION, columns, [original]))
+        self.assertEqual(columns, result.data)
+        predicates = []
+
+        def visit(node):
+            if node.kind == OperatorKind.JOIN:
+                predicates.extend(split_conjunction(node.data))
+            for child in node.children:
+                visit(child)
+
+        visit(result)
+        self.assertCountEqual(
+            split_conjunction(original.data) + [original.children[0].data], predicates
+        )
+
+    def test_preserves_join_with_unqualified_columns(self):
+        original = join(table("A"), table("B"), "A", "B")
+        original.data = Comparison(ColumnRef(None, "id"), "=", ColumnRef("B", "id"))
+        self.assertEqual(original, optimize_restrictive_first(original))
+
+    def test_does_not_create_cartesian_join_when_conditions_cannot_connect_all_tables(self):
+        original = join(join(table("A"), table("B"), "A", "B"), table("C"), "A", "B")
+        snapshot = deepcopy(original)
+
+        result = optimize_restrictive_first(original)
+
+        self.assertEqual(snapshot, result)
+        self.assertEqual(snapshot, original)
+
+    def test_full_pipeline_applies_restrictive_first(self):
+        equality = Comparison(ColumnRef("Produto", "idProduto"), "=", Literal("1", "number"))
+        range_condition = Comparison(ColumnRef("Produto", "Preco"), ">", Literal("100", "number"))
+        original = OperatorNode(OperatorKind.SELECTION, LogicalAnd(range_condition, equality), [table("Produto")])
+        result = optimize(original)
+        self.assertEqual(range_condition, result.data)
+        self.assertEqual(equality, result.children[0].data)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from .parser import Query, parse_query
 from .relational_algebra import to_relational_algebra
 from .semantic import validate
 from .optimizer import optimize
-from .metadata import SCHEMA
+from .metadata import SCHEMA, TABLE_CARDINALITIES, COLUMN_DISTINCT_VALUES
 
 
 EXAMPLE_QUERY = (
@@ -116,13 +116,30 @@ def button_bar(master: tk.Misc, analyze, clear_all):
 
 def TreeMetadata(master: tk.Misc):
     frame = ttk.Frame(master)
-    ttk.Label(frame, text="Metadados").pack(side="top", fill="x")
-    tree = ttk.Treeview(frame, show="tree", height=8)
+    ttk.Label(frame, text="Metadados (estimativas)").pack(side="top", fill="x")
+    tree = ttk.Treeview(
+        frame, columns=("cardinality", "distinct_values"),
+        show="tree headings", height=8,
+    )
+    tree.heading("#0", text="Tabela / Coluna")
+    tree.heading("cardinality", text="Cardinalidade")
+    tree.heading("distinct_values", text="Valores distintos")
+    tree.column("#0", width=190, minwidth=120)
+    tree.column("cardinality", width=95, minwidth=90, anchor="e")
+    tree.column("distinct_values", width=110, minwidth=100, anchor="e")
 
     for table_name, columns in SCHEMA.items():
-        table_item = tree.insert("", "end", text=table_name)
+        cardinality = TABLE_CARDINALITIES.get(table_name, "Não informado")
+        table_item = tree.insert(
+            "", "end", text=table_name, values=(cardinality, "")
+        )
         for column_name in columns:
-            tree.insert(table_item, "end", text=column_name)
+            distinct_values = COLUMN_DISTINCT_VALUES.get(
+                (table_name, column_name), "Não informado"
+            )
+            tree.insert(
+                table_item, "end", text=column_name, values=("", distinct_values)
+            )
 
     tree.pack(fill="both", expand=True)
 
