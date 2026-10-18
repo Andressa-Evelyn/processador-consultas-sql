@@ -41,7 +41,7 @@ COMPARISON_OPERATORS = {
 # --------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True)
 class ColumnRef:
     """Referência a uma coluna, ex.: `Produto.Nome` ou apenas `Nome`."""
 
@@ -52,7 +52,7 @@ class ColumnRef:
         return f"{self.table}.{self.name}" if self.table else self.name
 
 
-@dataclass
+@dataclass(frozen=True)
 class Literal:
     """Valor literal usado em uma comparação (número ou string)."""
 
@@ -66,7 +66,7 @@ class Literal:
 Operand = Union[ColumnRef, Literal]
 
 
-@dataclass
+@dataclass(frozen=True)
 class Comparison:
     left: Operand
     operator: str  # um de '=', '>', '<', '<=', '>=', '<>'
