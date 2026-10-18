@@ -1,5 +1,6 @@
 from enum import Enum
 from dataclasses import dataclass, field
+from typing import Any
 
 from .parser import Query
 
@@ -15,9 +16,23 @@ class OperatorKind(str, Enum):
 class OperatorNode:
     """Representa uma tabela ou um operador no grafo."""
 
-    kind: str
-    label: str
+    kind: OperatorKind
+    data: Any
     children: list[OperatorNode] = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        if self.kind == OperatorKind.TABLE:
+            return f'{self.data}'
+        if self.kind == OperatorKind.JOIN:
+            return f'JUNÇÃO: {self.data}'
+        if self.kind == OperatorKind.SELECTION:
+            return f'SELEÇÃO: {self.data}'
+        if self.kind == OperatorKind.PROJECTION:
+            content = ", ".join(str(column) for column in self.data)
+            return f'PROJEÇÃO: {content}'
+
+        raise ValueError('kind não suportado')
 
 
 def build_operator_graph(query: Query) -> OperatorNode:
@@ -31,7 +46,7 @@ def build_operator_graph(query: Query) -> OperatorNode:
         table = OperatorNode(OperatorKind.TABLE, join.table)
         current = OperatorNode(
             OperatorKind.JOIN,
-            "JUNÇÃO: " + str(join.condition),
+            join.condition,
             [current, table],
         )
 
@@ -39,17 +54,16 @@ def build_operator_graph(query: Query) -> OperatorNode:
     if query.where is not None:
         current = OperatorNode(
             OperatorKind.SELECTION,
-            "SELEÇÃO: " + str(query.where),
+            query.where,
             [current],
         )
 
     # A projeção seleciona as colunas do SELECT.
     # SELECT * mantém todas as colunas e não cria esse operador.
     if query.columns != "*":
-        columns = ", ".join(str(column) for column in query.columns)
         current = OperatorNode(
             OperatorKind.PROJECTION,
-            "PROJEÇÃO: " + columns,
+            query.columns,
             [current],
         )
 
