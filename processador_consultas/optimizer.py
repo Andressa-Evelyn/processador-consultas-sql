@@ -71,7 +71,7 @@ def optimize_selection_pushdown(
     join = node.children[0]
 
     if (
-        join.kind != OperatorKind.JOIN
+        join.kind not in (OperatorKind.JOIN, OperatorKind.CROSS_PRODUCT)
         or len(join.children) != 2
     ):
         return node
@@ -217,7 +217,7 @@ def optimize_projection_pushdown(
                 ],
             )
 
-        if node.kind == OperatorKind.JOIN:
+        if node.kind in (OperatorKind.JOIN, OperatorKind.CROSS_PRODUCT):
             join_keys = {
                 column_key(column)
                 for column in collect_column_refs(node.data)
@@ -241,7 +241,7 @@ def optimize_projection_pushdown(
             }
 
             return OperatorNode(
-                kind=OperatorKind.JOIN,
+                kind=node.kind,
                 data=node.data,
                 children=[
                     push(left, left_required),
@@ -277,7 +277,7 @@ def estimate_cardinality(node: OperatorNode) -> float:
     """Estima linhas intermediárias sem acessar um banco de dados."""
     if node.kind == OperatorKind.TABLE:
         return float(TABLE_CARDINALITIES.get(node.data, DEFAULT_TABLE_CARDINALITY))
-    if node.kind == OperatorKind.JOIN:
+    if node.kind in (OperatorKind.JOIN, OperatorKind.CROSS_PRODUCT):
         left, right = node.children
         return estimate_cardinality(left) * estimate_cardinality(right) * estimate_selectivity(node.data)
     rows = estimate_cardinality(node.children[0])
@@ -372,9 +372,75 @@ def optimize_restrictive_first(root: OperatorNode) -> OperatorNode:
     return reorder(deepcopy(root))
 
 
+def avoid_cartesian_product(
+    root: OperatorNode,
+) -> OperatorNode:
+    root = deepcopy(root)
+
+    root.children = [
+        avoid_cartesian_product(child)
+        for child in root.children
+    ]
+
+    if root.kind != OperatorKind.SELECTION:
+        return root
+
+    if len(root.children) != 1:
+        return root
+
+    product = root.children[0]
+
+    if (
+        product.kind != OperatorKind.CROSS_PRODUCT
+        or len(product.children) != 2
+    ):
+        return root
+
+    predicate = root.data
+
+    # Esta regra exige uma comparação entre duas colunas.
+    if not isinstance(predicate, Comparison):
+        return root
+
+    if not (
+        isinstance(predicate.left, ColumnRef)
+        and isinstance(predicate.right, ColumnRef)
+    ):
+        return root
+
+    left_tables = collect_tables(product.children[0])
+    right_tables = collect_tables(product.children[1])
+
+    left_table = predicate.left.table
+    right_table = predicate.right.table
+
+    # A condição precisa conectar os dois ramos.
+    connects_branches = (
+        left_table in left_tables
+        and right_table in right_tables
+    ) or (
+        right_table in left_tables
+        and left_table in right_tables
+    )
+
+    if not connects_branches:
+        return root
+
+    return OperatorNode(
+        kind=OperatorKind.JOIN,
+        data=predicate,
+        children=product.children,
+    )
+
+
 def optimize(node: OperatorNode) -> OperatorNode:
     all_optimizers = [
-        optimize_selection_pushdown, optimize_restrictive_first,
+        optimize_selection_pushdown,
+        # Expõe comparações individuais dos ANDs para a conversão em junções.
+        optimize_restrictive_first,
+        avoid_cartesian_product,
+        # As junções recém-criadas também precisam entrar na ordenação.
+        optimize_restrictive_first,
         optimize_projection_pushdown,
     ]
     result = node

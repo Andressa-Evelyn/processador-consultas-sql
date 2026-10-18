@@ -30,7 +30,7 @@ def validate(query: Query) -> None:
     # 1) tabelas usadas na consulta (FROM + JOINs) precisam existir no modelo.
     used_tables: dict[str, str] = {}  # nome digitado (lower) -> nome canônico
     table_entries = [("FROM", query.from_table)] + [
-        ("JOIN", join.table) for join in query.joins
+        ("FROM" if join.condition is None else "JOIN", join.table) for join in query.joins
     ]
     for clause, typed_name in table_entries:
         canonical = metadata.find_table(typed_name)

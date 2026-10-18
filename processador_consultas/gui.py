@@ -10,8 +10,8 @@ from __future__ import annotations
 import tkinter as tk
 from collections import defaultdict
 from tkinter import font as tkfont
-from tkinter import scrolledtext, StringVar
-from tkinter import ttk
+from tkinter import scrolledtext, StringVar, ttk
+from collections.abc import Callable
 
 from processador_consultas.operator_graph import OperatorNode, build_operator_graph
 
@@ -39,7 +39,7 @@ class AppViewModel:
         self._optimized_graph = None
         self._listeners: dict[str, list] = defaultdict(list)
 
-    def add_notify(self, key: str, func: callable):
+    def add_notify(self, key: str, func: Callable[[OperatorNode], None]):
         self._listeners[key].append(func)
 
     def notify(self, key):
@@ -150,7 +150,7 @@ class QueryFrame(ttk.Frame):
     def __init__(self, master: tk.Misc, view_model: AppViewModel, **kwargs):
         super().__init__(master, **kwargs)
         self.view_model = view_model
-        self.input_box: scrolledtext.ScrolledText = None
+        self.input_box: scrolledtext.ScrolledText | None = None
         self.build()
         self.view_model.sql_text.trace_add('write', self.attach)
 
@@ -191,7 +191,7 @@ class OutputFrame(ttk.Frame):
     def __init__(self, master: tk.Misc, view_model: AppViewModel, **kwargs):
         super().__init__(master, **kwargs)
         self.view_model = view_model
-        self.output_box: scrolledtext.ScrolledText = None
+        self.output_box: scrolledtext.ScrolledText | None = None
         self.build()
         self.view_model.output_text.trace_add("write", self.update_output)
 
@@ -226,13 +226,13 @@ class OutputFrame(ttk.Frame):
 
 
 class GraphFrame(ttk.Frame):
-    def __init__(self, parent: tk.Misc, observer: callable, **kwargs) -> None:
+    def __init__(self, parent: tk.Misc, observer: Callable[Callable[[OperatorNode], None], None], **kwargs) -> None:
         super().__init__(parent, **kwargs)
         self.graph_tree = ttk.Treeview(self, show="tree", height=8)
         self.graph_tree.pack(fill="both", expand=True, padx=12, pady=(6, 12))
         observer(self.update_graph)
 
-    def update_graph(self, value):
+    def update_graph(self, value: OperatorNode):
         self.clear_graph()
         if value:
             self.show_operator_graph(value)
@@ -296,7 +296,10 @@ def _describe(query: Query) -> str:
     if query.joins:
         lines.append("Junções (JOIN)       :")
         for join in query.joins:
-            lines.append(f"  - {join.table}  ON  {join.condition}")
+            if join.condition is None:
+                lines.append(f"  - {join.table} (produto cartesiano)")
+            else:
+                lines.append(f"  - {join.table}  ON  {join.condition}")
     else:
         lines.append("Junções (JOIN)       : nenhuma")
     lines.append(f"Condição (WHERE)     : {query.where if query.where else 'nenhuma'}")

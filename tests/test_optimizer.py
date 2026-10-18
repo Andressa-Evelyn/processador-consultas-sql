@@ -6,7 +6,7 @@ from processador_consultas import metadata
 
 from processador_consultas.operator_graph import OperatorKind, OperatorNode
 from processador_consultas.optimizer import (
-    collect_tables, estimate_cardinality, estimate_selectivity,
+    avoid_cartesian_product, collect_tables, estimate_cardinality, estimate_selectivity,
     optimize, optimize_restrictive_first, optimize_selection_pushdown,
     split_conjunction,
 )
@@ -408,6 +408,111 @@ class TestRestrictiveFirst(unittest.TestCase):
         result = optimize(original)
         self.assertEqual(range_condition, result.data)
         self.assertEqual(equality, result.children[0].data)
+
+
+class TestAvoidCartesianProduct(unittest.TestCase):
+    def setUp(self):
+        self.product = OperatorNode(
+            OperatorKind.CROSS_PRODUCT, None, [table("A"), table("B")]
+        )
+
+    def test_converts_comparisons_connecting_branches_in_both_operand_orders(self):
+        for operator in ("=", ">", "<", ">=", "<=", "<>"):
+            for first, second in (("A", "B"), ("B", "A")):
+                with self.subTest(operator=operator, first=first):
+                    condition = Comparison(ColumnRef(first, "id"), operator, ColumnRef(second, "id"))
+                    original = selection(condition, self.product)
+                    expected = OperatorNode(OperatorKind.JOIN, condition, [table("A"), table("B")])
+
+                    self.assertEqual(expected, avoid_cartesian_product(original))
+
+    def test_preserves_predicates_that_do_not_connect_branches(self):
+        conditions = [
+            predicate("A"),
+            Comparison(Literal("1", "number"), "=", ColumnRef("B", "id")),
+            Comparison(ColumnRef("A", "id"), "=", ColumnRef("A", "other_id")),
+            Comparison(ColumnRef(None, "id"), "=", ColumnRef("B", "id")),
+            Comparison(ColumnRef("Unknown", "id"), "=", ColumnRef("B", "id")),
+            Comparison(Literal("1", "number"), "=", Literal("2", "number")),
+            LogicalAnd(predicate("A"), predicate("B")),
+        ]
+        for condition in conditions:
+            with self.subTest(condition=str(condition)):
+                original = selection(condition, self.product)
+                self.assertEqual(original, avoid_cartesian_product(original))
+
+    def test_recurses_below_projection_and_preserves_original_tree(self):
+        condition = Comparison(ColumnRef("A", "id"), "=", ColumnRef("B", "id"))
+        original = OperatorNode(
+            OperatorKind.PROJECTION, [ColumnRef("A", "id")],
+            [selection(condition, self.product)],
+        )
+        snapshot = deepcopy(original)
+        result = avoid_cartesian_product(original)
+        self.assertEqual(original.data, result.data)
+        self.assertEqual(OperatorKind.JOIN, result.children[0].kind)
+        self.assertEqual(condition, result.children[0].data)
+        result.children[0].children[0].data = "Changed"
+        self.assertEqual(snapshot, original)
+
+    def test_connects_nested_branches_and_preserves_existing_selections(self):
+        left = selection(predicate("A"), join(table("A"), table("B"), "A", "B"))
+        product = OperatorNode(OperatorKind.CROSS_PRODUCT, None, [left, table("C")])
+        condition = Comparison(ColumnRef("B", "id"), "=", ColumnRef("C", "id"))
+        expected = OperatorNode(OperatorKind.JOIN, condition, [left, table("C")])
+        self.assertEqual(expected, avoid_cartesian_product(selection(condition, product)))
+
+    def test_preserves_nodes_without_eligible_product(self):
+        condition = Comparison(ColumnRef("A", "id"), "=", ColumnRef("B", "id"))
+        cases = [
+            table("A"), self.product,
+            selection(condition, table("A")),
+            selection(condition, make_join(table("A"), table("B"))),
+            OperatorNode(OperatorKind.SELECTION, condition, []),
+            OperatorNode(OperatorKind.SELECTION, condition, [table("A"), table("B")]),
+            selection(condition, OperatorNode(OperatorKind.CROSS_PRODUCT, None, [table("A")])),
+        ]
+        for original in cases:
+            with self.subTest(original=original):
+                self.assertEqual(original, avoid_cartesian_product(original))
+
+    def test_repeated_optimization_preserves_result(self):
+        condition = Comparison(ColumnRef("A", "id"), "=", ColumnRef("B", "id"))
+        result = avoid_cartesian_product(selection(condition, self.product))
+        self.assertEqual(result, avoid_cartesian_product(result))
+
+
+class TestOptimizationPipeline(unittest.TestCase):
+    def test_converts_cross_product_with_join_and_local_predicates_in_either_order(self):
+        join_condition = Comparison(ColumnRef("A", "id"), "=", ColumnRef("B", "id"))
+        local_condition = predicate("A")
+        for conditions in ((join_condition, local_condition), (local_condition, join_condition)):
+            with self.subTest(conditions=conditions):
+                original = selection(LogicalAnd(*conditions), OperatorNode(
+                    OperatorKind.CROSS_PRODUCT, None, [table("A"), table("B")]
+                ))
+                snapshot = deepcopy(original)
+                result = optimize(original)
+                self.assertEqual(OperatorKind.JOIN, result.kind)
+                self.assertEqual(join_condition, result.data)
+                self.assertEqual(OperatorKind.SELECTION, result.children[0].kind)
+                self.assertEqual(local_condition, result.children[0].data)
+                self.assertEqual(snapshot, original)
+
+    def test_orders_joins_created_from_nested_products(self):
+        first = Comparison(ColumnRef("A", "id"), "=", ColumnRef("B", "id"))
+        second = Comparison(ColumnRef("B", "id"), "=", ColumnRef("C", "id"))
+        inner = selection(first, OperatorNode(
+            OperatorKind.CROSS_PRODUCT, None, [table("A"), table("B")]
+        ))
+        original = selection(second, OperatorNode(
+            OperatorKind.CROSS_PRODUCT, None, [inner, table("C")]
+        ))
+        with patch.dict(metadata.TABLE_CARDINALITIES, {"A": 10000, "B": 100, "C": 10}):
+            result = optimize(original)
+        inner_join = next(child for child in result.children if child.kind == OperatorKind.JOIN)
+        self.assertEqual({"B", "C"}, collect_tables(inner_join))
+        self.assertCountEqual([first, second], [result.data, inner_join.data])
 
 
 if __name__ == "__main__":

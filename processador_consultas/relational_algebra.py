@@ -9,9 +9,18 @@ def to_relational_algebra(query: Query) -> str:
     """Converte FROM, JOIN, WHERE e SELECT em relações e operadores."""
     expression = query.from_table
 
-    # JOIN ... ON vira junção (⋈), mantendo a condição do ON.
+    # JOIN tem precedência sobre os produtos cartesianos do FROM.
+    groups = []
     for join in query.joins:
-        expression = f"({expression} ⋈_{{{join.condition}}} {join.table})"
+        if join.condition is None:
+            groups.append(expression)
+            expression = join.table
+        else:
+            expression = f"({expression} ⋈_{{{join.condition}}} {join.table})"
+    groups.append(expression)
+    expression = groups[0]
+    for group in groups[1:]:
+        expression = f"({expression} × {group})"
 
     # WHERE vira seleção (σ).
     if query.where is not None:

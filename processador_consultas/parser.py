@@ -2,7 +2,7 @@
 
 Gramática implementada (maiúsculas = palavras-chave fixas):
 
-    query        := SELECT select_list FROM IDENT join* [WHERE condition]
+    query        := SELECT select_list FROM IDENT (join | ',' IDENT)* [WHERE condition]
     select_list  := '*' | column_ref (',' column_ref)*
     join         := JOIN IDENT ON condition
     condition    := and_expr
@@ -91,7 +91,7 @@ Condition = Union[Comparison, LogicalAnd]
 @dataclass
 class Join:
     table: str
-    condition: Condition
+    condition: Condition | None = None  # None representa uma tabela após vírgula.
 
 
 @dataclass
@@ -143,8 +143,13 @@ class Parser:
         from_table = self._expect("IDENT", "o nome de uma tabela após 'FROM'").value
 
         joins: list[Join] = []
-        while self._current().type == "JOIN":
-            joins.append(self._parse_join())
+        while self._current().type in ("JOIN", "COMMA"):
+            if self._current().type == "COMMA":
+                self._advance()
+                table = self._expect("IDENT", "o nome de uma tabela após ','").value
+                joins.append(Join(table))
+            else:
+                joins.append(self._parse_join())
 
         where: Condition | None = None
         if self._current().type == "WHERE":
