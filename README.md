@@ -16,7 +16,7 @@ otimização e exibe o plano de execução final.
 | HU2 | Conversão para Álgebra Relacional         | ✅ Implementada |
 | HU3 | Construção do Grafo de Operadores         | ✅ Implementada |
 | HU4 | Otimização da Consulta (heurísticas)      | ✅ Implementada |
-| HU5 | Plano de Execução                         | ⬜ Pendente     |
+| HU5 | Plano de Execução                         | ✅ Implementada |
 
 ## HU1 — Entrada e Validação da Consulta
 
@@ -157,7 +157,8 @@ dos grafos, as transformações, a preservação da árvore original e o fluxo d
 │   ├── relational_algebra.py      # conversão da AST para álgebra relacional (HU2)
 │   ├── operator_graph.py          # construção do grafo de operadores (HU3)
 │   ├── optimizer.py               # heurísticas de otimização do grafo (HU4)
-│   └── gui.py                     # interface gráfica (Tkinter) das HU1 a HU4
+│   ├── execution_plan.py          # plano lógico ordenado (HU5)
+│   └── gui.py                     # interface gráfica (Tkinter) das HU1 a HU5
 └── tests/
     ├── test_lexer.py
     ├── test_parser.py
