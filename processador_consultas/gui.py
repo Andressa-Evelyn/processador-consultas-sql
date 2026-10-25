@@ -21,6 +21,7 @@ from .relational_algebra import to_relational_algebra
 from .semantic import validate
 from .optimizer import optimize
 from .metadata import SCHEMA, TABLE_CARDINALITIES, COLUMN_DISTINCT_VALUES
+from .execution_plan import build_execution_plan
 
 
 EXAMPLE_QUERY = (
@@ -247,6 +248,36 @@ class GraphFrame(ttk.Frame):
             self.show_operator_graph(child, item)
 
 
+
+class ExecutionPlanFrame(ttk.Frame):
+    """Exibe o plano lógico ordenado e a justificativa de cada operação."""
+    def __init__(self, parent: tk.Misc, observer, **kwargs):
+        super().__init__(parent, **kwargs)
+        ttk.Label(self, text="Plano de Execução (grafo otimizado)").pack(
+            side="top", fill="x", padx=8, pady=(8, 2)
+        )
+        self.tree = ttk.Treeview(
+            self, columns=("operation", "heuristic", "rationale"),
+            show="headings", height=10
+        )
+        self.tree.heading("operation", text="Etapa / operação")
+        self.tree.heading("heuristic", text="Heurística")
+        self.tree.heading("rationale", text="Justificativa / efeito")
+        self.tree.column("operation", width=220, minwidth=150)
+        self.tree.column("heuristic", width=240, minwidth=170)
+        self.tree.column("rationale", width=420, minwidth=220)
+        self.tree.pack(fill="both", expand=True, padx=8, pady=8)
+        observer(self.update_plan)
+
+    def update_plan(self, root):
+        self.tree.delete(*self.tree.get_children())
+        if root is None:
+            return
+        for step in build_execution_plan(root):
+            self.tree.insert("", "end", values=(
+                f"{step.number}. {step.operation}", step.heuristic, step.rationale
+            ))
+
 def GraphTabs(master: tk.Misc, view_model: AppViewModel, **kwargs):
     frame = ttk.Frame(master)
     tk.Label(
@@ -259,6 +290,7 @@ def GraphTabs(master: tk.Misc, view_model: AppViewModel, **kwargs):
     tabs = ttk.Notebook(frame)
     tabs.add(GraphFrame(tabs, lambda func: view_model.add_notify("original", func)), text="Sem otimização")
     tabs.add(GraphFrame(tabs, lambda func: view_model.add_notify("optimized", func)), text="Com otimização")
+    tabs.add(ExecutionPlanFrame(tabs, lambda func: view_model.add_notify("optimized", func)), text="Plano de Execução")
     tabs.pack(fill="both", expand=True)
     return frame
 
@@ -266,7 +298,7 @@ def GraphTabs(master: tk.Misc, view_model: AppViewModel, **kwargs):
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Processador de Consultas SQL — HU1, HU2  HU3")
+        self.title("Processador de Consultas SQL — HU1 a HU5")
         self.geometry("860x600")
         self.minsize(640, 480)
         self.view_model = AppViewModel()
