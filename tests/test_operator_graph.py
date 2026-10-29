@@ -74,7 +74,11 @@ class TestOperatorGraph(unittest.TestCase):
         result = optimize(graph)
         self.assertEqual(OperatorKind.PROJECTION, result.kind)
         self.assertEqual(OperatorKind.CROSS_PRODUCT, result.children[0].kind)
-        self.assertEqual(OperatorKind.SELECTION, result.children[0].children[0].kind)
+        projected = result.children[0].children[0]
+        self.assertEqual(OperatorKind.PROJECTION, projected.kind)
+        filtered = projected.children[0]
+        self.assertEqual(OperatorKind.SELECTION, filtered.kind)
+        self.assertEqual(OperatorKind.TABLE, filtered.children[0].kind)
         self.assertEqual(
             "π_{Produto.Nome, Categoria.Descricao}(σ_{Produto.Preco > 100}((Produto × Categoria)))",
             to_relational_algebra(query),

@@ -7,7 +7,7 @@ from processador_consultas import metadata
 from processador_consultas.operator_graph import OperatorKind, OperatorNode
 from processador_consultas.optimizer import (
     avoid_cartesian_product, collect_tables, estimate_cardinality, estimate_selectivity,
-    optimize, optimize_restrictive_first, optimize_selection_pushdown,
+    optimize, optimize_projection_pushdown, optimize_restrictive_first, optimize_selection_pushdown,
     split_conjunction,
 )
 from processador_consultas.parser import ColumnRef, Comparison, Literal, LogicalAnd
@@ -310,6 +310,38 @@ def join(left, right, first, second):
     )
 
 
+class TestProjectionPushdown(unittest.TestCase):
+    def test_filters_before_projection_and_keeps_join_columns(self):
+        columns = [ColumnRef("A", "name"), ColumnRef("B", "description")]
+        original = OperatorNode(OperatorKind.PROJECTION, columns, [
+            make_join(selection(predicate("A", "price"), table("A")), table("B"))
+        ])
+        snapshot = deepcopy(original)
+
+        result = optimize_projection_pushdown(original)
+
+        left, right = result.children[0].children
+        self.assertEqual(OperatorKind.PROJECTION, left.kind)
+        self.assertEqual([ColumnRef("A", "id"), ColumnRef("A", "name")], left.data)
+        self.assertEqual(selection(predicate("A", "price"), table("A")), left.children[0])
+        self.assertEqual([ColumnRef("B", "a_id"), ColumnRef("B", "description")], right.data)
+        self.assertEqual(columns, result.data)
+        self.assertEqual(snapshot, original)
+
+    def test_keeps_consecutive_filters_before_projection(self):
+        filters = selection(predicate("A", "price"),
+                            selection(predicate("A", "stock"), table("A")))
+        columns = [ColumnRef("A", "name")]
+        original = OperatorNode(OperatorKind.PROJECTION, columns, [filters])
+
+        result = optimize_projection_pushdown(original)
+
+        projected = result.children[0]
+        self.assertEqual(OperatorKind.PROJECTION, projected.kind)
+        self.assertEqual(columns, projected.data)
+        self.assertEqual(filters, projected.children[0])
+
+
 class TestRestrictiveFirst(unittest.TestCase):
     def test_metadata_covers_all_tables(self):
         self.assertEqual(set(metadata.SCHEMA), set(metadata.TABLE_CARDINALITIES))
@@ -495,8 +527,10 @@ class TestOptimizationPipeline(unittest.TestCase):
                 result = optimize(original)
                 self.assertEqual(OperatorKind.JOIN, result.kind)
                 self.assertEqual(join_condition, result.data)
-                self.assertEqual(OperatorKind.SELECTION, result.children[0].kind)
-                self.assertEqual(local_condition, result.children[0].data)
+                projected = result.children[0]
+                self.assertEqual(OperatorKind.PROJECTION, projected.kind)
+                self.assertEqual([ColumnRef("A", "id")], projected.data)
+                self.assertEqual(selection(local_condition, table("A")), projected.children[0])
                 self.assertEqual(snapshot, original)
 
     def test_orders_joins_created_from_nested_products(self):

@@ -166,23 +166,22 @@ def optimize_projection_pushdown(
 ) -> OperatorNode:
     refs = collect_refs_by_key(root)
 
-    def push(node, required: set[tuple[str, str]]):
+    def project(node, required):
+        tables = collect_tables(node)
+        columns = [
+            refs[key]
+            for key in sorted(required)
+            if key[0] in tables and key in refs
+        ]
+
+        if not columns:
+            return node
+
+        return OperatorNode(OperatorKind.PROJECTION, columns, [node])
+
+    def push(node, required: set[tuple[str, str]], project_output=True):
         if node.kind == OperatorKind.TABLE:
-            # Conserva apenas as colunas necessárias desta tabela.
-            columns = [
-                refs[key]
-                for key in sorted(required)
-                if key[0] == node.data and key in refs
-            ]
-
-            if not columns:
-                return node
-
-            return OperatorNode(
-                kind=OperatorKind.PROJECTION,
-                data=columns,
-                children=[node],
-            )
+            return project(node, required) if project_output else node
 
         if node.kind == OperatorKind.PROJECTION:
             projection_keys = {
@@ -209,13 +208,17 @@ def optimize_projection_pushdown(
 
             child_required = required | predicate_keys
 
-            return OperatorNode(
+            result = OperatorNode(
                 kind=OperatorKind.SELECTION,
                 data=node.data,
                 children=[
-                    push(node.children[0], child_required)
+                    # Não insere projeções entre filtros consecutivos nem
+                    # entre o último filtro e a tabela.
+                    push(node.children[0], child_required, project_output=False)
                 ],
             )
+            # Colunas usadas apenas no predicado podem ser descartadas aqui.
+            return project(result, required) if project_output else result
 
         if node.kind in (OperatorKind.JOIN, OperatorKind.CROSS_PRODUCT):
             join_keys = {
