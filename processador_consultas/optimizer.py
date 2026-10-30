@@ -10,7 +10,7 @@ from .operator_graph import OperatorNode, OperatorKind
 
 
 def collect_tables(node: OperatorNode) -> set[str]:
-    """Retorna todas as tabelas presentes em uma subárvore."""
+    """Retorna os nomes das tabelas presentes em uma subárvore."""
     if node.kind == OperatorKind.TABLE:
         return {node.data}
 
@@ -20,6 +20,11 @@ def collect_tables(node: OperatorNode) -> set[str]:
         tables.update(collect_tables(child))
 
     return tables
+
+
+def normalize_table_names(tables: set[str]) -> set[str]:
+    """Normaliza identificadores para comparação sem diferenciar caixa."""
+    return {table.casefold() for table in tables}
 
 
 def collect_columns(value) -> set[ColumnRef]:
@@ -77,8 +82,8 @@ def optimize_selection_pushdown(
         return node
 
     left, right = join.children
-    left_tables = collect_tables(left)
-    right_tables = collect_tables(right)
+    left_tables = normalize_table_names(collect_tables(left))
+    right_tables = normalize_table_names(collect_tables(right))
 
     def combine(first, second):
         if first is None:
@@ -92,7 +97,11 @@ def optimize_selection_pushdown(
             first = partition(condition.left)
             second = partition(condition.right)
             return tuple(combine(a, b) for a, b in zip(first, second))
-        referenced_tables = {column.table for column in collect_columns(condition)}
+        referenced_tables = {
+            column.table.casefold()
+            for column in collect_columns(condition)
+            if column.table is not None
+        }
         if referenced_tables and referenced_tables <= left_tables:
             return condition, None, None
         if referenced_tables and referenced_tables <= right_tables:
@@ -121,7 +130,11 @@ def optimize_selection_pushdown(
 
 
 def column_key(column: ColumnRef) -> tuple[str, str]:
-    return column.table, column.name
+    """Chave de coluna independente de maiúsculas/minúsculas."""
+    return (
+        column.table.casefold() if column.table is not None else "",
+        column.name.casefold(),
+    )
 
 
 def collect_column_refs(value) -> list[ColumnRef]:
@@ -167,7 +180,7 @@ def optimize_projection_pushdown(
     refs = collect_refs_by_key(root)
 
     def project(node, required):
-        tables = collect_tables(node)
+        tables = normalize_table_names(collect_tables(node))
         columns = [
             refs[key]
             for key in sorted(required)
@@ -230,8 +243,8 @@ def optimize_projection_pushdown(
 
             left, right = node.children
 
-            left_tables = collect_tables(left)
-            right_tables = collect_tables(right)
+            left_tables = normalize_table_names(collect_tables(left))
+            right_tables = normalize_table_names(collect_tables(right))
 
             left_required = {
                 key for key in all_required
@@ -265,11 +278,19 @@ def estimate_selectivity(condition) -> float:
         return estimate_selectivity(condition.left) * estimate_selectivity(condition.right)
     if not isinstance(condition, Comparison):
         return 1.0
-    distinct_counts = [
-        COLUMN_DISTINCT_VALUES[(column.table, column.name)]
-        for column in collect_columns(condition)
-        if (column.table, column.name) in COLUMN_DISTINCT_VALUES
-    ]
+    distinct_counts = []
+    for column in collect_columns(condition):
+        if column.table is None:
+            continue
+        count = next(
+            (value for (table_name, column_name), value
+             in COLUMN_DISTINCT_VALUES.items()
+             if table_name.casefold() == column.table.casefold()
+             and column_name.casefold() == column.name.casefold()),
+            None,
+        )
+        if count is not None:
+            distinct_counts.append(count)
     if condition.operator in ("=", "<>") and distinct_counts:
         equality = 1 / max(1, max(distinct_counts))
         return equality if condition.operator == "=" else 1 - equality
@@ -279,7 +300,12 @@ def estimate_selectivity(condition) -> float:
 def estimate_cardinality(node: OperatorNode) -> float:
     """Estima linhas intermediárias sem acessar um banco de dados."""
     if node.kind == OperatorKind.TABLE:
-        return float(TABLE_CARDINALITIES.get(node.data, DEFAULT_TABLE_CARDINALITY))
+        cardinality = next(
+            (count for table_name, count in TABLE_CARDINALITIES.items()
+             if table_name.casefold() == str(node.data).casefold()),
+            DEFAULT_TABLE_CARDINALITY,
+        )
+        return float(cardinality)
     if node.kind in (OperatorKind.JOIN, OperatorKind.CROSS_PRODUCT):
         left, right = node.children
         return estimate_cardinality(left) * estimate_cardinality(right) * estimate_selectivity(node.data)
@@ -337,8 +363,12 @@ def optimize_restrictive_first(root: OperatorNode) -> OperatorNode:
                 relations.append(reorder(current))
 
         flatten(node)
-        table_sets = [collect_tables(relation) for relation in relations]
-        references = [{column.table for column in collect_columns(c)} for c in conditions]
+        table_sets = [normalize_table_names(collect_tables(relation)) for relation in relations]
+        references = [
+            {column.table.casefold() for column in collect_columns(condition)
+             if column.table is not None}
+            for condition in conditions
+        ]
         # Sem resolução de aliases/colunas ambíguas, conservamos a ordem original.
         all_tables = set().union(*table_sets)
         if (sum(map(len, table_sets)) != len(all_tables)
@@ -356,8 +386,16 @@ def optimize_restrictive_first(root: OperatorNode) -> OperatorNode:
                     applicable = [c for c, refs in pending
                                   if refs <= available and refs & table_sets[i] and refs & table_sets[j]]
                     if applicable:
-                        join = OperatorNode(OperatorKind.JOIN, combine_conjunction(applicable),
-                                            [relations[i], relations[j]])
+                        first, second = relations[i], relations[j]
+                        # Em junções internas, prioriza como entrada esquerda
+                        # a relação com menor cardinalidade estimada.
+                        if estimate_cardinality(first) > estimate_cardinality(second):
+                            first, second = second, first
+                        join = OperatorNode(
+                            OperatorKind.JOIN,
+                            combine_conjunction(applicable),
+                            [first, second],
+                        )
                         candidates.append((estimate_cardinality(join), i, j, join))
             if not candidates:
                 # Não introduzimos produtos cartesianos para conectar componentes.
@@ -411,11 +449,11 @@ def avoid_cartesian_product(
     ):
         return root
 
-    left_tables = collect_tables(product.children[0])
-    right_tables = collect_tables(product.children[1])
+    left_tables = normalize_table_names(collect_tables(product.children[0]))
+    right_tables = normalize_table_names(collect_tables(product.children[1]))
 
-    left_table = predicate.left.table
-    right_table = predicate.right.table
+    left_table = predicate.left.table.casefold() if predicate.left.table else None
+    right_table = predicate.right.table.casefold() if predicate.right.table else None
 
     # A condição precisa conectar os dois ramos.
     connects_branches = (
