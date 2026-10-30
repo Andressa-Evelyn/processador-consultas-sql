@@ -17,7 +17,7 @@ from processador_consultas.operator_graph import OperatorNode, build_operator_gr
 
 from .errors import SqlSemanticError, SqlSyntaxError
 from .parser import Query, parse_query
-from .relational_algebra import to_relational_algebra
+from .relational_algebra import to_relational_algebra, node_to_relational_algebra
 from .semantic import validate
 from .optimizer import optimize
 from .metadata import SCHEMA, TABLE_CARDINALITIES, COLUMN_DISTINCT_VALUES
@@ -88,12 +88,16 @@ class AppViewModel:
 
         # self.last_query = query
         algebra = to_relational_algebra(query)
-        self.output_text.set(
-            f"✅ Consulta válida!\n\n{_describe(query)}\n\n"
-            f"Álgebra Relacional:\n{algebra}"
-        )
         self.original_graph = build_operator_graph(query)
         self.optimized_graph = optimize(self.original_graph)
+        algebra_optimized = node_to_relational_algebra(self.optimized_graph)
+        self.output_text.set(
+            f"✅ Consulta válida!\n\n{_describe(query)}\n\n"
+            f"Álgebra Relacional:\n{algebra}\n\n"
+            f"Álgebra Relacional otimizada:\n{algebra_optimized}\n"
+        )
+        print(f'{self.original_graph=}')
+        print(f'{self.optimized_graph=}')
 
     def clear(self):
         self.output_text.set('')

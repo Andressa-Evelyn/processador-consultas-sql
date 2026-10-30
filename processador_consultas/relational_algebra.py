@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .parser import Query
+from .operator_graph import OperatorNode, OperatorKind
 
 
 def to_relational_algebra(query: Query) -> str:
@@ -32,3 +33,26 @@ def to_relational_algebra(query: Query) -> str:
         expression = f"π_{{{columns}}}({expression})"
 
     return expression
+
+
+def node_to_relational_algebra(node: OperatorNode) -> str:
+    """Converte OperatorNode em relações e operadores."""
+    if node.kind == OperatorKind.TABLE:
+        return str(node.data)
+
+    if node.kind in (OperatorKind.JOIN, OperatorKind.CROSS_PRODUCT):
+        left, right = node.children
+        left_expression = node_to_relational_algebra(left)
+        right_expression = node_to_relational_algebra(right)
+        operator = f"⋈_{{{node.data}}}" if node.kind == OperatorKind.JOIN else "×"
+        return f"({left_expression} {operator} {right_expression})"
+
+    if node.kind in (OperatorKind.SELECTION, OperatorKind.PROJECTION):
+        child, = node.children
+        expression = node_to_relational_algebra(child)
+        if node.kind == OperatorKind.SELECTION:
+            return f"σ_{{{node.data}}}({expression})"
+        columns = ", ".join(str(column) for column in node.data)
+        return f"π_{{{columns}}}({expression})"
+
+    raise ValueError(f"Operador não suportado: {node.kind}")
