@@ -27,14 +27,14 @@ class OperatorNode:
         if self.kind == OperatorKind.TABLE:
             return f'{self.data}'
         if self.kind == OperatorKind.JOIN:
-            return f'JUNÇÃO: {self.data}'
+            return f'JUNÇÃO ⋈: {self.data}'
         if self.kind == OperatorKind.CROSS_PRODUCT:
-            return 'PRODUTO CARTESIANO'
+            return 'PRODUTO CARTESIANO ×'
         if self.kind == OperatorKind.SELECTION:
-            return f'SELEÇÃO: {self.data}'
+            return f'SELEÇÃO σ: {self.data}'
         if self.kind == OperatorKind.PROJECTION:
             content = ", ".join(str(column) for column in self.data)
-            return f'PROJEÇÃO: {content}'
+            return f'PROJEÇÃO π: {content}'
 
         raise ValueError('kind não suportado')
 
